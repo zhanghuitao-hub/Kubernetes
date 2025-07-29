@@ -1,0 +1,52 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: logging
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: es-cluster
+  namespace: logging
+  labels:
+    app: es-cluster
+    kubernetes.io/cluster-service: "true"
+    addonmanager.kubernetes.io/mode: Reconcile
+---
+kind: ClusterRole
+apiVersion: rbac.authorization.k8s.io/v1
+metadata:
+  name: es-cluster
+  namespace: logging
+  labels:
+    app: es-cluster
+    kubernetes.io/cluster-service: "true"
+    addonmanager.kubernetes.io/mode: Reconcile
+rules:
+- apiGroups:
+  - ""
+  resources:
+  - "services"
+  - "namespaces"
+  - "endpoints"
+  verbs:
+  - "get"
+---
+kind: ClusterRoleBinding
+apiVersion: rbac.authorization.k8s.io/v1
+metadata:
+  name: es-cluster
+  namespace: logging
+  labels:
+    app: es-cluster
+    kubernetes.io/cluster-service: "true"
+    addonmanager.kubernetes.io/mode: Reconcile
+subjects:
+- kind: ServiceAccount
+  name: es-cluster
+  namespace: kube-system
+  apiGroup: ""
+roleRef:
+  kind: ClusterRole
+  name: es-cluster
+  apiGroup: ""

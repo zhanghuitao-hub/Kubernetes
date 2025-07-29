@@ -1,0 +1,149 @@
+apiVersion: apps/v1             # 创建有状态的服务
+kind: StatefulSet
+metadata:
+  name: es-cluster
+  namespace: logging
+  labels:
+    app: es-cluster
+    kubernetes.io/cluster-service: "true"
+    addonmanager.kubernetes.io/mode: Reconcile
+    srv: srv-elasticsearch
+spec:
+  serviceName: "es-headless"
+  replicas: 3
+  selector:
+    matchLabels:
+      app: es-cluster
+      kubernetes.io/cluster-service: "true"
+  template:
+    metadata:
+      labels:
+        app: es-cluster
+        kubernetes.io/cluster-service: "true"
+    spec:
+      serviceAccountName: es-cluster
+      containers:         # 主容器
+      - name: elasticsearch
+        image: elasticsearch:7.10.1
+        imagePullPolicy: IfNotPresent
+
+        resources:
+          requests:
+            memory: "10240Mi"
+            cpu: "2000m"
+          limits:
+            memory: "10240Mi"
+            cpu: "4000m"
+        ports:
+        - containerPort: 9200
+          name: rest-api
+          protocol: TCP
+        - containerPort: 9300
+          name: inter-node
+          protocol: TCP
+        volumeMounts:
+        - name: data
+          mountPath: /usr/share/elasticsearch/data
+        - name: localtime
+          readOnly: true
+          mountPath: /etc/localtime
+        env:
+        - name: cluster.name
+          value: "es-cluster"
+        - name: node.name
+          valueFrom:
+            fieldRef:
+              fieldPath: metadata.name
+        - name: discovery.zen.minimum_master_nodes
+          value: "2"
+        - name: discovery.seed_hosts
+          value: "es-cluster-0.es-headless.logging,es-cluster-1.es-headless.logging,es-cluster-2.es-headless.logging"
+        - name: cluster.initial_master_nodes
+          value: "es-cluster-0,es-cluster-1,es-cluster-2"
+        - name: ES_JAVA_OPTS
+          value: "-Xms8g -Xmx8g"
+        - name: xpack.security.enabled    # X-Pack 安全认证
+          value: "true"
+        - name: xpack.security.transport.ssl.enabled
+          value: "true"
+        - name: xpack.security.transport.ssl.verification_mode  # 证书校验类型
+          value: "certificate"
+        - name: xpack.security.transport.ssl.keystore.path    # 证书路径
+          value: "/usr/share/elasticsearch/data/tls/elastic-certificates.p12"
+        - name: xpack.security.transport.ssl.truststore.path
+          value: "/usr/share/elasticsearch/data/tls/elastic-certificates.p12"
+#        - name: xpack.monitoring.ui.container.elasticsearch.enabled   # 生成并提供与容器相关的监控数据，待验证
+#          value: "true"
+        - name: network.host
+          value: "0.0.0.0"
+        - name: "http.cors.allow-origin"
+          value: "*"
+        - name: "http.cors.enabled"
+          value: "true"
+        - name: "number_of_shards"
+          value: "3"
+        - name: "number_of_replicas"
+          value: "1"
+        #- name: reindex.remote.whitelist        # 设置同步白名单，可以用来数据迁移
+        #  value: "192.168.10.13:9200"
+      initContainers:        # 初始化容器
+      - name: fix-permissions
+        image: busybox
+        imagePullPolicy: IfNotPresent
+        command: ["sh", "-c", "chown -R 1000:1000 /usr/share/elasticsearch/data"]
+        securityContext:
+          privileged: true
+        volumeMounts:
+        - name: data
+          mountPath: /usr/share/elasticsearch/data
+        - name: localtime
+          readOnly: true
+          mountPath: /etc/localtime
+      - name: increase-vm-max-map
+        image: busybox
+        imagePullPolicy: IfNotPresent
+        command: ["sysctl", "-w", "vm.max_map_count=262144"]
+        securityContext:
+          privileged: true
+      - name: increase-fd-ulimit
+        image: busybox
+        imagePullPolicy: IfNotPresent
+        command: ["sh", "-c", "ulimit -n 65536"]
+      volumes:
+      - name: localtime
+        hostPath:
+          path: /etc/localtime
+          type: ''
+  volumeClaimTemplates:
+  - metadata:
+      name: data
+    spec:
+      accessModes: [ "ReadWriteMany" ]
+      # 使用的存储类名称，需要配置一个有效的存储类
+      storageClassName: "nfs-client"
+      resources:
+        requests:
+          storage: 10Gi
+---
+apiVersion: v1             # 创建service 文件用于内部通讯
+kind: Service
+metadata:
+  name: es-headless
+  namespace: logging
+  labels:
+    app: es7-cluster
+    kubernetes.io/cluster-service: "true"
+    addonmanager.kubernetes.io/mode: Reconcile
+    kubernetes.io/name: "Elasticsearch"
+spec:
+  clusterIP: None
+  publishNotReadyAddresses: true
+  ports:
+  - name: rest-api
+    port: 9200
+    targetPort: 9200
+  - name: inter-node
+    port: 9300
+    targetPort: 9300
+  selector:
+    app: es-cluster
