@@ -1,0 +1,164 @@
+kind: ConfigMap
+apiVersion: v1
+metadata:
+  name: fluentd-config
+  namespace: logging
+data:
+  system.conf: |-
+    <system>
+      root_dir /tmp/fluentd-buffers/
+    </system>
+  fluent.conf: |-
+    # 采集nginx日志
+    <source>                          # 1个source代表一个采集源, 可以配置多个采集源
+      @id fluentd-nginx.log      # 为当前 source 定义一个唯一的 ID，这有助于 Fluentd 识别并管理多个采集源
+      @type tail                              # Fluentd 内置的输入方式，其原理是不停地从源文件中获取新的日志。
+      path /var/log/nginx/json_access.log           # 挂载的服务器Docker容器日志地址
+      pos_file /var/log/nginx.access.log.pos    # 指定位置文件，用来记录日志读取的进度。Fluentd 会在该文件中存储最后读取的行号，以便下次启动时继续从上次停止的地方读取日志。
+      tag nginx.access                  # 设置日志标签
+      format json              # 告诉 Fluentd 日志文件的格式是 JSON
+      read_from_head true       # 表示在首次启动时，Fluentd 会从日志文件的头部开始读取，而不是从文件末尾开始。
+      <parse>           # 定义如何解析日志内容。
+        @type json     # 指示 Fluentd 使用 JSON 解析器来解析日志内容
+      </parse>
+    </source>
+    <match nginx.**>  # 匹配所有以nginx.开头的日志标签
+      @type elasticsearch
+      host es-headless                   # Elasticsearch 的主机名或 IP 地址
+      port 9200                          # Elasticsearch 的端口号（通常是9200）
+      user elastic                       # es用户名
+      password Bdjd@2024.                # es密码
+      logstash_format true               # 使用 Logstash 格式来组织数据，这对于 Kibana 可视化非常有用
+      logstash_prefix nginx              # 指定索引的前缀，通常为日志的类型或来源（此处为 nginx）
+      logstash_dateformat "%Y-%m-%d"     # 每天创建一个新的索引，按照日期格式
+      # 设置索引模板
+      template_name fluentd-template
+      template_overwrite true
+      flush_interval 5s                  # 设置日志批量发送到 Elasticsearch 的频率
+      include_tag_key true               # 将尝试在发出请求时出现故障时重新加载节点地址
+      reload_on_failure true             # 发生错误时重置连接（在下次发送时生效）
+      reconnect_on_error true            # HTTP 请求超时时间
+      retry_limit 17                     # 重试次数
+      num_threads 8                      # 配置并行线程数
+    </match>
+
+    # 采集k8s日志
+    <source>
+      @id fluentd-ingress-containers.log
+      @type tail
+      path /var/log/containers/ingress-nginx-controller*.log
+      pos_file /var/log/ingress-containers.log.pos
+      tag raw.kubernetes.*
+      read_from_head true
+      <parse>
+        @type multi_format
+        <pattern>
+          # 以json格式匹配日志
+          format json
+          time_key time
+          time_format %Y-%m-%dT%H:%M:%S.%N%z
+          keep_time_key false
+        </pattern>
+        # 如果不是json格式日志的兜底匹配方案
+        <pattern>
+          format /^(?<time>.+) (?<stream>stdout|stderr) [^ ]* (?<log>.*)$/
+          time_format %Y-%m-%dT%H:%M:%S.%N%z
+        </pattern>
+      </parse>
+    </source>
+
+    <source>
+      @id fluentd-jenkins-containers.log
+      @type tail
+      path /var/log/containers/jenkins*.log
+      pos_file /var/log/jenkins-containers.log.pos
+      tag raw.kubernetes.*
+      read_from_head true
+      <parse>
+        @type multi_format
+        <pattern>
+          # 以json格式匹配日志
+          format json
+          time_key time
+          time_format %Y-%m-%dT%H:%M:%S.%N%z
+          keep_time_key false
+        </pattern>
+        # 如果不是json格式日志的兜底匹配方案
+        <pattern>
+          format /^(?<time>.+) (?<stream>stdout|stderr) [^ ]* (?<log>.*)$/
+          time_format %Y-%m-%dT%H:%M:%S.%N%z
+        </pattern>
+      </parse>
+    </source>
+
+    <filter **>
+      @id filter_concat
+      @type concat
+      key log
+      # 多行合并规则，看是否有日志出现
+      multiline_start_regexp /(\d{4}-\d{2}-\d{2}|==>|<==)/
+      separator ""
+      flush_interval 5s
+    </filter>
+
+    <filter raw.kubernetes.**>
+      @id filter_kubernetes_metadata
+      @type kubernetes_metadata
+      skip_container_metadata true
+      skip_labels true
+      skip_master_url true
+    </filter>
+
+    <filter raw.kubernetes.**>
+      @id filter_k8s_cleanup
+      @type record_transformer
+      # 移除不需要的K8S信息(可选)
+      remove_keys $.kubernetes.namespace_id,$.docker,$.stream
+    </filter>
+
+    <filter raw.kubernetes.**>
+      # CHANGED: 新增 - 将kubernetes字段提升一级
+      @id filter_promote_k8s_fields
+      @type record_transformer
+      enable_ruby true
+      <record>
+        container_name  ${record['kubernetes']['container_name']}
+        namespace_name  ${record['kubernetes']['namespace_name']}
+        pod_id          ${record['kubernetes']['pod_id']}
+        pod_ip          ${record['kubernetes']['pod_ip']}
+        pod_name        ${record['kubernetes']['pod_name']}
+        host            ${record['kubernetes']['host']}
+        message         ${record['log']}
+      </record>
+      renew_record false  # CHANGED: 保留原始字段，非覆盖
+      remove_keys $.kubernetes, $.log
+    </filter>
+
+    <filter raw.kubernetes.**>  # CHANGED: 新增 - 提取log等级
+      @id filter_log_level
+      @type record_transformer
+      enable_ruby true
+      <record>
+        log_level ${record['log'] =~ /(INFO|DEBUG|ERROR|WARN|error|debug|info|warning)/ ? $1 : 'UNKNOWN'}
+      </record>
+    </filter>
+
+    <match raw.kubernetes.**>
+      @type elasticsearch
+      host es-headless
+      port 9200
+      user elastic
+      password Bdjd@2024.
+      logstash_format true
+      logstash_prefix k8s-pod
+      logstash_dateformat "%Y-%m-%d"
+      template_name fluentd-pod-template
+      template_overwrite true
+      flush_interval 5s
+      include_tag_key true
+      reload_on_failure true
+      reconnect_on_error true
+      retry_limit 17
+      num_threads 8
+    </match>
+

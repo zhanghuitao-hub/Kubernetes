@@ -1,0 +1,122 @@
+# 创建一个 用户
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: fluentd-sa
+  namespace: logging
+---
+# 创建一个角色
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: fluentd-cr
+  namespace: logging
+# 角色的规则
+rules:
+  - apiGroups: [""]
+    resources: ["pods", "namespaces"]
+    verbs: ["get", "watch", "list"]
+---
+# 创建一个 ClusterRoleBinding
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: fluentd-crb
+  namespace: logging
+# 绑定的用户
+subjects:
+  - kind: ServiceAccount
+    # 要绑定的用户的名称
+    name: fluentd-sa
+    namespace: logging
+# 绑定的角色
+roleRef:
+  kind: ClusterRole
+  # 要绑定的角色的名称
+  name: fluentd-cr
+  apiGroup: rbac.authorization.k8s.io
+---
+# 创建一个DaemonSet 确保在每一个节点上都有一个fluentd pod
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: fluentd-ds
+  namespace: logging
+spec:
+  selector:
+    # 标签选择器，选择要管理的Pod，就是下文的模板中的标签
+    matchLabels:
+      app: fluentd
+  template:
+    metadata:
+      # pod的标签
+      labels:
+        app: fluentd
+    spec:
+      # 定义ServiceAccount
+      serviceAccountName: fluentd-sa
+      # 污点容忍度
+      # 允许在master节点上运行
+      tolerations:
+        - key: node-role.kubernetes.io/control-plane
+          effect: NoSchedule
+      containers:
+        - name: fluentd
+          image: fluent/fluentd-kubernetes-daemonset:v1.18-debian-elasticsearch7-1
+          imagePullPolicy: IfNotPresent
+          # # 环境变量 如果配置了configmap 则不需要配置环境变量
+          # env:
+          #   # ELASTICSEARCH的地址
+          #   - name: FLUENT_ELASTICSEARCH_HOST
+          #     value: "elasticsearch-service.logging.svc.cluster.local"
+          #   # ELASTICSEARCH的端口
+          #   - name: FLUENT_ELASTICSEARCH_PORT
+          #     value: "9200"
+          #   # ELASTICSEARCH的请求方式
+          #   - name: FLUENT_ELASTICSEARCH_SCHEME
+          #     value: "http"
+          #   # FLUENTD的日志级别
+          #   # 由于 FLUENTD_SYSTEMD_CONF 被设置为 disable，Fluentd
+          #   # 不会从 systemd 日志中收集日志，只会从配置的宿主机路径 /var/log 和 /var/lib/docker/containers 收集日志。
+          #   - name: FLUENTD_SYSTEMD_CONF
+          #     value: disable
+          # 资源限制
+          resources:
+            # 最大资源限制
+            limits:
+              memory: 200Mi
+            # 最小资源限制
+            requests:
+              cpu: 100m
+              memory: 200Mi
+          volumeMounts:
+            - name: varlogcontainers
+              mountPath: /var/log/containers
+            - name: varlibdockercontainers
+              mountPath: /var/lib/docker/containers
+              readOnly: true
+            - name: varlogpods
+              mountPath: /var/log/pods
+            - name: varlognginx
+              mountPath: /var/log/nginx
+            - name: fulentd-config
+              mountPath: /fluentd/etc/fluent.conf
+              subPath: fluent.conf
+      terminationGracePeriodSeconds: 30
+      volumes:
+        - name: varlogcontainers
+          hostPath:
+            path: /var/log/containers
+        - name: varlibdockercontainers
+          hostPath:
+            path: /var/lib/docker/containers
+        - name: varlogpods
+          hostPath:
+            path: /var/log/pods
+        - name: varlognginx
+          hostPath:
+            path: /var/log/nginx
+        - name: fulentd-config
+          configMap:
+            name: fluentd-config
+
