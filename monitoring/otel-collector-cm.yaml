@@ -1,0 +1,104 @@
+kind: ConfigMap
+apiVersion: v1
+metadata:
+  name: otel-collector-conf
+  namespace: monitoring
+  labels:
+    app: opentelemetry
+data:
+  otel-collector-config: |
+    receivers:
+      otlp:
+        protocols:
+          grpc:
+            endpoint: ${env:MY_POD_IP}:4317
+          http:
+            endpoint: ${env:MY_POD_IP}:4318
+      
+      prometheus:
+        config:
+          scrape_configs:
+            - job_name: kubernetes-cadvisor
+              scheme: https
+              tls_config:
+                ca_file: /var/run/secrets/kubernetes.io/serviceaccount/ca.crt
+                insecure_skip_verify: true
+              bearer_token_file: /var/run/secrets/kubernetes.io/serviceaccount/token
+              kubernetes_sd_configs:
+                - role: node
+              relabel_configs:
+                - action: labelmap
+                  regex: __meta_kubernetes_node_label_(.+)
+                - source_labels: [ ]
+                  target_label: cluster
+                  replacement:  ygprod-cskbx9d
+                - target_label: __address__
+                  replacement: kubernetes.default.svc:443
+                - source_labels: [ __meta_kubernetes_node_name ]
+                  regex: (.+)
+                  target_label: __metrics_path__
+                  replacement: /api/v1/nodes/$${1}/proxy/metrics/cadvisor
+                - source_labels: [ instance ]
+                  separator: ;
+                  regex: (.+)
+                  target_label: node
+                  replacement: $$1
+                  action: replace
+
+            - job_name: kube-state-metrics
+              metrics_path: /metrics
+              kubernetes_sd_configs:
+                - role: endpoints
+              relabel_configs:
+                - source_labels: [ __meta_kubernetes_service_label_app_kubernetes_io_name ]
+                  regex: kube-state-metrics
+                  replacement: $$1
+                  action: keep
+                - action: labelmap
+                  regex: __meta_kubernetes_service_label_(.+)
+                - source_labels: [ ]
+                  target_label: cluster
+                  replacement: ygprod-cskbx9d
+
+            - job_name: rabbitmq-monitoring
+              scrape_interval: 30s
+              kubernetes_sd_configs:
+                - role: pod
+                  namespaces:
+                    names:
+                      - default
+              relabel_configs:
+                - source_labels: [ __meta_kubernetes_pod_container_name, __meta_kubernetes_pod_container_port_name ]
+                  action: keep
+                  regex: rabbitmq;prometheus
+                - source_labels: [ ]
+                  target_label: cluster
+                  replacement: rabbitmq-cluster
+                - source_labels: [ __address__ ]
+                  target_label: node
+                  regex: (.+)
+                  replacement: $$1
+                  action: replace
+
+            - job_name: 'redis-monitoring'
+              scrape_interval: 5s
+              static_configs:
+                - targets: ['redis-exporter:9121']
+                  labels:
+                    host_name: redis_WphZ
+                    instance_ip: '10.184.243.249:6379'
+
+    exporters:
+      otlp:
+        endpoint: "skywalking-oap.skywalking:11800"
+        tls:
+          insecure: true
+      
+      debug:
+
+    service:
+      pipelines:
+        metrics:
+          receivers: [prometheus]
+          processors: []
+          exporters: [otlp, debug]

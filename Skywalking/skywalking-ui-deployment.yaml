@@ -1,0 +1,46 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: skywalking-ui
+  namespace: skywalking
+  labels:
+    app: skywalking-ui
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: skywalking-ui
+  template:
+    metadata:
+      labels:
+        app: skywalking-ui
+    spec:
+      containers:
+      - name: ui
+        image: apache/skywalking-ui:10.4.0
+        ports:
+        - containerPort: 8080
+        env:
+        - name: SW_OAP_ADDRESS
+          value: "http://skywalking-oap:12800"  # 指向OAP的Service
+        resources:
+          limits:
+            memory: "512Mi"
+            cpu: "500m"
+          requests:
+            memory: "256Mi"
+            cpu: "250m"
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: skywalking-ui
+  namespace: skywalking
+spec:
+  type: NodePort  # 也可以改成 LoadBalancer 或 Ingress
+  ports:
+  - port: 80
+    targetPort: 8081
+    nodePort: 30080  # 可指定端口范围 30000-32767
+  selector:
+    app: skywalking-ui

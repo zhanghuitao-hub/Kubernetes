@@ -1,0 +1,125 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: skywalking
+
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: skywalking-config
+  namespace: skywalking
+data:
+  SW_STORAGE: "elasticsearch"
+  SW_STORAGE_ES_CLUSTER_NODES: "192.168.158.171:9200"  # 改成你真实的ES地址
+  # 如果ES需要认证，取消注释并填写
+  # SW_ES_USER: "elastic"
+  # SW_ES_PASSWORD: "your-password"
+  # 如果ES使用HTTPS，需要额外配置
+  # SW_STORAGE_ES_HTTPS: "true"
+
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: skywalking-oap
+  namespace: skywalking
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: skywalking-oap-role
+rules:
+- apiGroups: [""]
+  resources: ["pods", "endpoints", "services", "nodes"]
+  verbs: ["get", "watch", "list"]
+- apiGroups: ["extensions", "networking.k8s.io"]
+  resources: ["ingresses"]
+  verbs: ["get", "watch", "list"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: skywalking-oap-binding
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: skywalking-oap-role
+subjects:
+- kind: ServiceAccount
+  name: skywalking-oap
+  namespace: skywalking
+
+--
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: skywalking-oap
+  namespace: skywalking
+  labels:
+    app: skywalking-oap
+spec:
+  replicas: 1  # 如果ES支持高并发，可以改为2或3实现OAP集群
+  selector:
+    matchLabels:
+      app: skywalking-oap
+  template:
+    metadata:
+      labels:
+        app: skywalking-oap
+    spec:
+      imagePullSecrets:
+        - name: image-secret
+      serviceAccountName: skywalking-oap
+      containers:
+      - name: oap
+        image: apache/skywalking-oap-server:10.4.0
+        ports:
+        - containerPort: 11800  # gRPC端口，Agent上报数据用
+          name: grpc
+        - containerPort: 12800  # HTTP端口，UI查询数据用
+          name: http
+        envFrom:
+        - configMapRef:
+            name: skywalking-config  # 引用上面创建的ConfigMap
+        # 如果OAP需要多实例集群，添加以下环境变量（启用K8s协调）
+        # env:
+        # - name: SW_CLUSTER
+        #   value: kubernetes
+        # - name: SW_CLUSTER_K8S_NAMESPACE
+        #   value: "skywalking"
+        livenessProbe:
+          httpGet:
+            path: /health
+            port: 12800
+          initialDelaySeconds: 60
+          periodSeconds: 10
+        readinessProbe:
+          httpGet:
+            path: /health
+            port: 12800
+          initialDelaySeconds: 30
+          periodSeconds: 5
+        resources:
+          limits:
+            memory: "4Gi"
+            cpu: "2"
+          requests:
+            memory: "1Gi"
+            cpu: "500m"
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: skywalking-oap
+  namespace: skywalking
+spec:
+  ports:
+  - port: 11800
+    targetPort: 11800
+    name: grpc
+  - port: 12800
+    targetPort: 12800
+    name: http
+  selector:
+    app: skywalking-oap

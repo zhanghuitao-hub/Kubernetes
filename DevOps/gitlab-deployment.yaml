@@ -1,0 +1,140 @@
+---
+kind: PersistentVolumeClaim
+apiVersion: v1
+metadata:
+  name: gitlab-config
+  namespace: devops
+spec:
+  storageClassName: nfs-client
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 1Mi
+
+---
+kind: PersistentVolumeClaim
+apiVersion: v1
+metadata:
+  name: gitlab-logs
+  namespace: devops
+spec:
+  storageClassName: nfs-client
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 5Gi
+
+---
+kind: PersistentVolumeClaim
+apiVersion: v1
+metadata:
+  name: gitlab-data
+  namespace: devops
+spec:
+  storageClassName: nfs-client
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 50Gi
+
+---
+kind: Deployment
+apiVersion: apps/v1
+metadata:
+  name: gitlab-ce
+  namespace: devops
+  labels:
+    name: gitlab-ce
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      name: gitlab-ce
+  template:
+    metadata:
+      name: gitlab-ce
+      labels:
+        name: gitlab-ce
+    spec:
+      volumes:
+        - name: gitlab-data
+          persistentVolumeClaim:
+            claimName: gitlab-data-pvc
+        - name: gitlab-conf
+          persistentVolumeClaim:
+            claimName: gitlab-conf-pvc
+        - name: gitlab-log
+          persistentVolumeClaim:
+            claimName: gitlab-logs-pvc
+        - name: localtime
+          hostPath:
+            path: /etc/localtime
+        - name: timezone
+          hostPath:
+            path: /etc/timezone
+      containers:
+        - name: gitlab-ce
+          image: gitlab/gitlab-ce:19.1.7-ce.0
+          env:
+            - name: GITLAB_ROOT_PASSWORD
+              value: edoc2edoc2
+            - name: GITLAB_ROOT_EMAIL
+              value: tang.li@macrowing.com
+            - name: GITLAB_HOST
+              value: 192.168.1.11  #masterIP
+            - name: GITLAB_PORT
+              value: "30880"
+            - name: GITLAB_SSH_PORT
+              value: "22"
+            - name: GENERATED_EXTERNAL_URL
+              value: "http://192.168.1.11:30880"
+          ports:
+            - name: http
+              containerPort: 30880
+              protocol: TCP
+            - name: ssh
+              containerPort: 22
+              protocol: TCP
+          resources:
+            limits:
+              cpu: '4'
+              memory: 8Gi
+            requests:
+              cpu: '2'
+              memory: 4Gi
+          volumeMounts:
+            - name: gitlab-data
+              mountPath: /var/opt/gitlab
+            - name: gitlab-log
+              mountPath: /var/log/gitlab
+            - name: gitlab-conf
+              mountPath: /etc/gitlab
+            - name: localtime
+              mountPath: /etc/localtime
+            - mountPath: /etc/timezone
+              name: timezone
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: gitlab-ce-svc
+  namespace: devops
+  labels:
+    name: gitlab
+spec:
+  type: NodePort
+  ports:
+    - name: http
+      port: 80
+      targetPort: http
+      nodePort: 30880
+    - name: ssh
+      port: 22
+      targetPort: ssh
+      nodePort: 32222
+  selector:
+    name: gitlab-ce

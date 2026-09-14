@@ -1,0 +1,132 @@
+kind: StatefulSet
+apiVersion: apps/v1
+metadata:
+  name: elastic-cluster
+  namespace: skywalking
+  labels:
+    app: elastic-cluster
+spec:
+  replicas: 3
+  selector:
+    matchLabels:
+      app: elastic-cluster
+  template:
+    metadata:
+      creationTimestamp: null
+      labels:
+        app: elastic-cluster
+    spec:
+      volumes:
+        - name: localtime
+          hostPath:
+            path: /etc/localtime
+            type: ''
+      initContainers:
+        - name: fix-permissions
+          image: busybox:1.38.0
+          command:
+            - sh
+            - '-c'
+            - chown -R 1000:1000 /usr/share/elasticsearch/data
+          volumeMounts:
+            - name: data
+              mountPath: /usr/share/elasticsearch/data
+          securityContext:
+            privileged: true
+        - name: increase-vm-max-map
+          image: busybox:1.38.0
+          command:
+            - sysctl
+            - '-w'
+            - vm.max_map_count=262144
+          securityContext:
+            privileged: true
+        - name: increase-fd-ulimit
+          image: busybox:1.38.0
+          command:
+            - sh
+            - '-c'
+            - ulimit -n 65536
+          imagePullPolicy: IfNotPresent
+          securityContext:
+            privileged: true
+      containers:
+        - name: elasticsearch
+          image: elasticsearch:7.17.20
+          ports:
+            - name: rest-api
+              containerPort: 9200
+              protocol: TCP
+            - name: inter-node
+              containerPort: 9300
+              protocol: TCP
+          env:
+            - name: node.name
+              valueFrom:
+                fieldRef:
+                  apiVersion: v1
+                  fieldPath: metadata.name
+            - name: cluster.name
+              value: elastic-cluster
+            - name: discovery.seed_hosts
+              value: elastic-svc
+            - name: cluster.initial_master_nodes
+              value: elastic-cluster-0,elastic-cluster-1,elastic-cluster-2
+            - name: ES_JAVA_OPTS
+              value: '-Xms2g -Xmx2g'
+            - name: xpack.security.enabled
+              value: 'true'
+            - name: xpack.security.transport.ssl.enabled
+              value: 'false'
+            - name: xpack.security.http.ssl.enabled
+              value: 'false'
+            - name: discovery.type
+              value: zen
+            - name: discovery.zen.minimum_master_nodes
+              value: '2'
+          resources:
+            limits:
+              cpu: '2'
+              memory: 8Gi
+            requests:
+              cpu: '1'
+              memory: 6Gi
+          volumeMounts:
+            - name: data
+              mountPath: /usr/share/elasticsearch/data
+            - name: localtime
+              readOnly: true
+              mountPath: /etc/localtime
+          imagePullPolicy: IfNotPresent
+  volumeClaimTemplates:
+  - metadata:
+      name: data
+    spec:
+      storageClassName: nfs-client
+      accessModes: [ "ReadWriteOnce" ]
+      resources:
+        requests:
+          storage: 10Gi
+  serviceName: elastic-svc
+---
+kind: Service
+apiVersion: v1
+metadata:
+  name: elastic-svc
+  namespace: skywalking
+  labels:
+    app: elastic-cluster
+spec:
+  ports:
+    - name: rest-api
+      protocol: TCP
+      port: 9200
+      targetPort: 9200
+    - name: inter-node
+      protocol: TCP
+      port: 9300
+      targetPort: 9300
+  selector:
+    app: elastic-cluster
+  clusterIP: None
+  type: ClusterIP
